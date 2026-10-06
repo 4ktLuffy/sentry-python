@@ -38,7 +38,9 @@ from sentry_sdk.integrations.langgraph import (  # noqa: E402
     LanggraphIntegration,
     _parse_langgraph_messages,
     _wrap_pregel_ainvoke,
+    _wrap_pregel_astream,
     _wrap_pregel_invoke,
+    _wrap_pregel_stream,
     _wrap_state_graph_compile,
 )
 
@@ -2655,3 +2657,98 @@ def test_state_graph_compile_gates_available_tools_only_when_data_collection_con
         assert SPANDATA.GEN_AI_REQUEST_AVAILABLE_TOOLS not in data
 
     assert data[SPANDATA.GEN_AI_AGENT_NAME] == "test_graph"
+
+
+def _invoke_agent_spans(events):
+    (event,) = events
+    return [s for s in event["spans"] if s["op"] == OP.GEN_AI_INVOKE_AGENT]
+
+
+def test_pregel_stream_creates_invoke_agent_span(sentry_init, capture_events):
+    sentry_init(
+        integrations=[LanggraphIntegration()],
+        traces_sample_rate=1.0,
+        stream_gen_ai_spans=False,
+    )
+    events = capture_events()
+    pregel = MockPregelInstance("test_graph")
+
+    def original_stream(self, state, config=None):
+        yield {"agent": {"messages": [MockMessage("step 1")]}}
+        yield {"agent": {"messages": [MockMessage("step 2")]}}
+
+    with start_transaction():
+        chunks = list(_wrap_pregel_stream(original_stream)(pregel, {"messages": []}))
+
+    assert len(chunks) == 2
+    (span,) = _invoke_agent_spans(events)
+    assert span["description"] == "invoke_agent test_graph"
+    assert span["data"][SPANDATA.GEN_AI_AGENT_NAME] == "test_graph"
+    assert span["data"][SPANDATA.GEN_AI_RESPONSE_STREAMING] is True
+
+
+def test_pregel_stream_closed_early_still_finishes_span(sentry_init, capture_events):
+    sentry_init(
+        integrations=[LanggraphIntegration()],
+        traces_sample_rate=1.0,
+        stream_gen_ai_spans=False,
+    )
+    events = capture_events()
+    pregel = MockPregelInstance("test_graph")
+
+    def original_stream(self, state, config=None):
+        yield {"agent": {}}
+        yield {"tools": {}}
+
+    with start_transaction():
+        stream = _wrap_pregel_stream(original_stream)(pregel, {"messages": []})
+        next(stream)
+        stream.close()
+
+    assert len(_invoke_agent_spans(events)) == 1
+
+
+def test_pregel_invoke_through_stream_creates_one_span(sentry_init, capture_events):
+    """invoke runs the graph through stream; only invoke's span may be created."""
+    sentry_init(
+        integrations=[LanggraphIntegration()],
+        traces_sample_rate=1.0,
+        stream_gen_ai_spans=False,
+    )
+    events = capture_events()
+    pregel = MockPregelInstance("test_graph")
+
+    def original_stream(self, state, config=None):
+        yield {"messages": [MockMessage("done", name="assistant")]}
+
+    wrapped_stream = _wrap_pregel_stream(original_stream)
+
+    def original_invoke(self, state, config=None):
+        *_, last = wrapped_stream(self, state)
+        return last
+
+    with start_transaction():
+        _wrap_pregel_invoke(original_invoke)(pregel, {"messages": []})
+
+    assert len(_invoke_agent_spans(events)) == 1
+
+
+def test_pregel_astream_creates_invoke_agent_span(sentry_init, capture_events):
+    sentry_init(
+        integrations=[LanggraphIntegration()],
+        traces_sample_rate=1.0,
+        stream_gen_ai_spans=False,
+    )
+    events = capture_events()
+    pregel = MockPregelInstance("test_graph")
+
+    async def original_astream(self, state, config=None):
+        yield {"agent": {}}
+        yield {"tools": {}}
+
+    async def run():
+        with start_transaction():
+            return [c async for c in _wrap_pregel_astream(original_astream)(pregel, {})]
+
+    assert len(asyncio.run(run())) == 2
+    assert len(_invoke_agent_spans(events)) == 1

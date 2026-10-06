@@ -1,5 +1,7 @@
+from contextlib import contextmanager
+from contextvars import ContextVar
 from functools import wraps
-from typing import Any, Callable, List, Optional
+from typing import Any, AsyncIterator, Callable, Iterator, List, Optional
 
 import sentry_sdk
 from sentry_sdk.ai.utils import (
@@ -43,14 +45,21 @@ class LanggraphIntegration(Integration):
         # StateGraphs are then compiled to a CompiledStateGraph. Both CompiledStateGraph and
         # the functional API execute on a Pregel instance. Pregel is the runtime for the graph
         # and the invocation happens on Pregel, so patching the invoke methods takes care of both.
-        # The streaming methods are not patched, because due to some internal reasons, LangGraph
-        # will automatically patch the streaming methods to run through invoke, and by doing this
-        # we prevent duplicate spans for invocations.
+        # invoke/ainvoke run the graph through stream/astream, so the streaming methods
+        # are patched too and skip span creation when called from inside invoke.
         StateGraph.compile = _wrap_state_graph_compile(StateGraph.compile)
         if hasattr(Pregel, "invoke"):
             Pregel.invoke = _wrap_pregel_invoke(Pregel.invoke)
         if hasattr(Pregel, "ainvoke"):
             Pregel.ainvoke = _wrap_pregel_ainvoke(Pregel.ainvoke)
+        if hasattr(Pregel, "stream"):
+            Pregel.stream = _wrap_pregel_stream(Pregel.stream)
+        if hasattr(Pregel, "astream"):
+            Pregel.astream = _wrap_pregel_astream(Pregel.astream)
+
+
+# Set while invoke/ainvoke runs, so the stream call it makes does not open a second span.
+_in_invoke: "ContextVar[bool]" = ContextVar("sentry_langgraph_in_invoke", default=False)
 
 
 def _should_record_inputs(integration: "LanggraphIntegration") -> bool:
@@ -235,7 +244,7 @@ def _wrap_pregel_invoke(f: "Callable[..., Any]") -> "Callable[..., Any]":
                                 unpack=False,
                             )
 
-                result = f(self, *args, **kwargs)
+                result = _call_in_invoke(f, self, *args, **kwargs)
 
                 _set_response_attributes(span, input_messages, result, integration)
 
@@ -277,7 +286,7 @@ def _wrap_pregel_invoke(f: "Callable[..., Any]") -> "Callable[..., Any]":
                                 unpack=False,
                             )
 
-                result = f(self, *args, **kwargs)
+                result = _call_in_invoke(f, self, *args, **kwargs)
 
                 _set_response_attributes(span, input_messages, result, integration)
 
@@ -336,7 +345,11 @@ def _wrap_pregel_ainvoke(f: "Callable[..., Any]") -> "Callable[..., Any]":
                                 unpack=False,
                             )
 
-                result = await f(self, *args, **kwargs)
+                token = _in_invoke.set(True)
+                try:
+                    result = await f(self, *args, **kwargs)
+                finally:
+                    _in_invoke.reset(token)
 
                 _set_response_attributes(span, input_messages, result, integration)
 
@@ -375,13 +388,114 @@ def _wrap_pregel_ainvoke(f: "Callable[..., Any]") -> "Callable[..., Any]":
                             unpack=False,
                         )
 
-            result = await f(self, *args, **kwargs)
+            token = _in_invoke.set(True)
+            try:
+                result = await f(self, *args, **kwargs)
+            finally:
+                _in_invoke.reset(token)
 
             _set_response_attributes(span, input_messages, result, integration)
 
             return result
 
     return new_ainvoke
+
+
+def _call_in_invoke(f: "Callable[..., Any]", *args: "Any", **kwargs: "Any") -> "Any":
+    token = _in_invoke.set(True)
+    try:
+        return f(*args, **kwargs)
+    finally:
+        _in_invoke.reset(token)
+
+
+@contextmanager
+def _stream_agent_span(
+    graph: "Any", args: "Any", integration: "LanggraphIntegration"
+) -> "Iterator[Any]":
+    client = sentry_sdk.get_client()
+    graph_name = _get_graph_name(graph)
+    span_name = f"invoke_agent {graph_name}".strip() if graph_name else "invoke_agent"
+
+    if has_span_streaming_enabled(client.options):
+        span_cm = sentry_sdk.traces.start_span(
+            name=span_name,
+            attributes={
+                "sentry.op": OP.GEN_AI_INVOKE_AGENT,
+                "sentry.origin": LanggraphIntegration.origin,
+                SPANDATA.GEN_AI_OPERATION_NAME: "invoke_agent",
+            },
+        )
+    else:
+        span_cm = get_start_span_function()(
+            op=OP.GEN_AI_INVOKE_AGENT,
+            name=span_name,
+            origin=LanggraphIntegration.origin,
+        )
+
+    with span_cm as span:
+        set_on_span = (
+            span.set_attribute if isinstance(span, StreamedSpan) else span.set_data
+        )
+        set_on_span(SPANDATA.GEN_AI_OPERATION_NAME, "invoke_agent")
+        set_on_span(SPANDATA.GEN_AI_RESPONSE_STREAMING, True)
+        if graph_name:
+            set_on_span(SPANDATA.GEN_AI_PIPELINE_NAME, graph_name)
+            set_on_span(SPANDATA.GEN_AI_AGENT_NAME, graph_name)
+
+        if len(args) > 0:
+            input_messages = _parse_langgraph_messages(args[0])
+            if input_messages and _should_record_inputs(integration):
+                normalized_input_messages = normalize_message_roles(input_messages)
+                scope = sentry_sdk.get_current_scope()
+                messages_data = (
+                    truncate_and_annotate_messages(
+                        normalized_input_messages, span, scope
+                    )
+                    if should_truncate_gen_ai_input(client.options)
+                    else normalized_input_messages
+                )
+                if messages_data is not None:
+                    set_data_normalized(
+                        span,
+                        SPANDATA.GEN_AI_REQUEST_MESSAGES,
+                        messages_data,
+                        unpack=False,
+                    )
+        yield span
+
+
+def _wrap_pregel_stream(f: "Callable[..., Any]") -> "Callable[..., Any]":
+    @wraps(f)
+    def new_stream(self: "Any", *args: "Any", **kwargs: "Any") -> "Iterator[Any]":
+        integration = sentry_sdk.get_client().get_integration(LanggraphIntegration)
+        if integration is None or _in_invoke.get():
+            yield from f(self, *args, **kwargs)
+            return
+
+        # The span ends when the stream is exhausted, raises, or is closed early.
+        with _stream_agent_span(self, args, integration):
+            yield from f(self, *args, **kwargs)
+
+    return new_stream
+
+
+def _wrap_pregel_astream(f: "Callable[..., Any]") -> "Callable[..., Any]":
+    @wraps(f)
+    async def new_astream(
+        self: "Any", *args: "Any", **kwargs: "Any"
+    ) -> "AsyncIterator[Any]":
+        integration = sentry_sdk.get_client().get_integration(LanggraphIntegration)
+        if integration is None or _in_invoke.get():
+            async for chunk in f(self, *args, **kwargs):
+                yield chunk
+            return
+
+        with _stream_agent_span(self, args, integration):
+            async for chunk in f(self, *args, **kwargs):
+                yield chunk
+
+    return new_astream
 
 
 def _get_new_messages(
