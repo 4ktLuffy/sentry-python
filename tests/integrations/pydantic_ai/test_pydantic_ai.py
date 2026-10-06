@@ -4876,3 +4876,30 @@ async def test_data_collection_gen_ai_request_messages_keep_tool_returns_when_ou
     assert tool_messages[0]["content"] == [
         {"type": "text", "text": expected_tool_return}
     ]
+
+
+def test_reasoning_tokens_recorded(sentry_init, capture_events, sync_event_loop):
+    """Reasoning models report reasoning tokens in RequestUsage.details."""
+
+    def reasoning_model(messages, info):
+        return ModelResponse(
+            parts=[TextPart(content="Paris.")],
+            usage=RequestUsage(
+                input_tokens=80, output_tokens=40, details={"reasoning_tokens": 25}
+            ),
+        )
+
+    sentry_init(
+        integrations=[PydanticAIIntegration()],
+        traces_sample_rate=1.0,
+        stream_gen_ai_spans=False,
+    )
+    events = capture_events()
+
+    agent = Agent(FunctionModel(reasoning_model), name="test_agent")
+    agent.run_sync("Capital of France?")
+
+    (transaction,) = (e for e in events if e["type"] == "transaction")
+    (chat_span,) = (s for s in transaction["spans"] if s["op"] == "gen_ai.chat")
+    assert chat_span["data"][SPANDATA.GEN_AI_USAGE_OUTPUT_TOKENS] == 40
+    assert chat_span["data"][SPANDATA.GEN_AI_USAGE_OUTPUT_TOKENS_REASONING] == 25
