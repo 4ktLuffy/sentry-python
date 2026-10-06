@@ -185,6 +185,7 @@ def _calculate_completions_token_usage(
     """Extract and record token usage from a Chat Completions API response."""
     input_tokens: "Optional[int]" = 0
     input_tokens_cached: "Optional[int]" = 0
+    input_tokens_cache_write: "Optional[int]" = 0
     output_tokens: "Optional[int]" = 0
     output_tokens_reasoning: "Optional[int]" = 0
     total_tokens: "Optional[int]" = 0
@@ -207,6 +208,11 @@ def _calculate_completions_token_usage(
             cached = getattr(usage.prompt_tokens_details, "cached_tokens", None)
             if isinstance(cached, int):
                 input_tokens_cached = cached
+            cache_write = getattr(
+                usage.prompt_tokens_details, "cache_write_tokens", None
+            )
+            if isinstance(cache_write, int):
+                input_tokens_cache_write = cache_write
 
         if hasattr(usage, "completion_tokens_details"):
             reasoning = getattr(
@@ -242,6 +248,7 @@ def _calculate_completions_token_usage(
     # Do not set token data if it is 0
     input_tokens = input_tokens or None
     input_tokens_cached = input_tokens_cached or None
+    input_tokens_cache_write = input_tokens_cache_write or None
     output_tokens = output_tokens or None
     output_tokens_reasoning = output_tokens_reasoning or None
     total_tokens = total_tokens or None
@@ -250,6 +257,7 @@ def _calculate_completions_token_usage(
         span,
         input_tokens=input_tokens,
         input_tokens_cached=input_tokens_cached,
+        input_tokens_cache_write=input_tokens_cache_write,
         output_tokens=output_tokens,
         output_tokens_reasoning=output_tokens_reasoning,
         total_tokens=total_tokens,
@@ -266,6 +274,7 @@ def _calculate_responses_token_usage(
     """Extract and record token usage from a Responses API response."""
     input_tokens: "Optional[int]" = 0
     input_tokens_cached: "Optional[int]" = 0
+    input_tokens_cache_write: "Optional[int]" = 0
     output_tokens: "Optional[int]" = 0
     output_tokens_reasoning: "Optional[int]" = 0
     total_tokens: "Optional[int]" = 0
@@ -284,6 +293,11 @@ def _calculate_responses_token_usage(
             cached = getattr(usage.input_tokens_details, "cached_tokens", None)
             if isinstance(cached, int):
                 input_tokens_cached = cached
+            cache_write = getattr(
+                usage.input_tokens_details, "cache_write_tokens", None
+            )
+            if isinstance(cache_write, int):
+                input_tokens_cache_write = cache_write
 
         if hasattr(usage, "output_tokens_details"):
             reasoning = getattr(usage.output_tokens_details, "reasoning_tokens", None)
@@ -320,6 +334,7 @@ def _calculate_responses_token_usage(
     # Do not set token data if it is 0
     input_tokens = input_tokens or None
     input_tokens_cached = input_tokens_cached or None
+    input_tokens_cache_write = input_tokens_cache_write or None
     output_tokens = output_tokens or None
     output_tokens_reasoning = output_tokens_reasoning or None
     total_tokens = total_tokens or None
@@ -328,6 +343,7 @@ def _calculate_responses_token_usage(
         span,
         input_tokens=input_tokens,
         input_tokens_cached=input_tokens_cached,
+        input_tokens_cache_write=input_tokens_cache_write,
         output_tokens=output_tokens,
         output_tokens_reasoning=output_tokens_reasoning,
         total_tokens=total_tokens,

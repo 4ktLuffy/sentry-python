@@ -4706,6 +4706,7 @@ def test_completions_token_usage_from_response():
             span,
             input_tokens=20,
             input_tokens_cached=None,
+            input_tokens_cache_write=None,
             output_tokens=10,
             output_tokens_reasoning=None,
             total_tokens=30,
@@ -4744,6 +4745,7 @@ def test_completions_token_usage_with_detailed_fields():
             span,
             input_tokens=20,
             input_tokens_cached=5,
+            input_tokens_cache_write=None,
             output_tokens=10,
             output_tokens_reasoning=8,
             total_tokens=30,
@@ -4783,6 +4785,7 @@ def test_completions_token_usage_manual_input_counting():
             span,
             input_tokens=11,
             input_tokens_cached=None,
+            input_tokens_cache_write=None,
             output_tokens=10,
             output_tokens_reasoning=None,
             total_tokens=10,
@@ -4822,6 +4825,7 @@ def test_completions_token_usage_manual_output_counting_streaming():
             span,
             input_tokens=20,
             input_tokens_cached=None,
+            input_tokens_cache_write=None,
             output_tokens=11,
             output_tokens_reasoning=None,
             total_tokens=20,
@@ -4874,6 +4878,7 @@ def test_completions_token_usage_manual_output_counting_choices():
             span,
             input_tokens=20,
             input_tokens_cached=None,
+            input_tokens_cache_write=None,
             output_tokens=11,
             output_tokens_reasoning=None,
             total_tokens=20,
@@ -4906,6 +4911,7 @@ def test_completions_token_usage_no_usage_data():
             span,
             input_tokens=None,
             input_tokens_cached=None,
+            input_tokens_cache_write=None,
             output_tokens=None,
             output_tokens_reasoning=None,
             total_tokens=None,
@@ -4939,6 +4945,7 @@ def test_responses_token_usage_from_response():
             span,
             input_tokens=20,
             input_tokens_cached=5,
+            input_tokens_cache_write=None,
             output_tokens=10,
             output_tokens_reasoning=8,
             total_tokens=30,
@@ -4968,6 +4975,7 @@ def test_responses_token_usage_no_usage_data():
             span,
             input_tokens=None,
             input_tokens_cached=None,
+            input_tokens_cache_write=None,
             output_tokens=None,
             output_tokens_reasoning=None,
             total_tokens=None,
@@ -5032,6 +5040,7 @@ def test_responses_token_usage_manual_output_counting_response_output():
             span,
             input_tokens=20,
             input_tokens_cached=None,
+            input_tokens_cache_write=None,
             output_tokens=11,
             output_tokens_reasoning=None,
             total_tokens=20,
@@ -8185,3 +8194,43 @@ async def test_streaming_responses_api_ttft_async(
 
     assert isinstance(ttft, float)
     assert ttft > 0
+
+
+def test_cache_write_tokens_are_recorded():
+    """Prompt-cache writes are billed separately and must not be dropped."""
+    span = mock.MagicMock()
+
+    def count_tokens(msg):
+        return len(str(msg))
+
+    chat = mock.MagicMock()
+    chat.usage.prompt_tokens = 20
+    chat.usage.prompt_tokens_details.cached_tokens = 5
+    chat.usage.prompt_tokens_details.cache_write_tokens = 3
+    chat.usage.completion_tokens = 10
+    chat.usage.completion_tokens_details.reasoning_tokens = 8
+    chat.usage.total_tokens = 30
+
+    responses = mock.MagicMock()
+    responses.usage.input_tokens = 20
+    responses.usage.input_tokens_details.cached_tokens = 5
+    responses.usage.input_tokens_details.cache_write_tokens = 3
+    responses.usage.output_tokens = 10
+    responses.usage.output_tokens_details.reasoning_tokens = 8
+    responses.usage.total_tokens = 30
+
+    with mock.patch(
+        "sentry_sdk.integrations.openai.record_token_usage"
+    ) as mock_record_token_usage:
+        _calculate_completions_token_usage(
+            messages=[],
+            response=chat,
+            span=span,
+            streaming_message_responses=[],
+            streaming_message_total_token_usage=None,
+            count_tokens=count_tokens,
+        )
+        _calculate_responses_token_usage([], responses, span, None, count_tokens)
+
+    for call in mock_record_token_usage.call_args_list:
+        assert call.kwargs["input_tokens_cache_write"] == 3
