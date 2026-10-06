@@ -357,5 +357,18 @@ def update_ai_client_span(
     if model_response and hasattr(model_response, "usage"):
         _set_usage_data(span, model_response.usage)
 
+    # pydantic-ai normalizes the provider's stop reason ("stop", "length",
+    # "tool_call", ...); without it truncated answers are indistinguishable.
+    # Sent as a JSON string, as the conventions type it: list values sent through
+    # span streaming are stored but cannot be searched.
+    finish_reason = getattr(model_response, "finish_reason", None)
+    if isinstance(finish_reason, str):
+        set_on_span = (
+            span.set_attribute if isinstance(span, StreamedSpan) else span.set_data
+        )
+        set_on_span(
+            SPANDATA.GEN_AI_RESPONSE_FINISH_REASONS, safe_serialize([finish_reason])
+        )
+
     # Set output data
     _set_output_data(span, model_response)

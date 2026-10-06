@@ -4876,3 +4876,27 @@ async def test_data_collection_gen_ai_request_messages_keep_tool_returns_when_ou
     assert tool_messages[0]["content"] == [
         {"type": "text", "text": expected_tool_return}
     ]
+
+
+def test_finish_reason_recorded(sentry_init, capture_events, sync_event_loop):
+    """A truncated answer must be distinguishable from a complete one."""
+
+    def truncated_model(messages, info):
+        return ModelResponse(
+            parts=[TextPart(content="The weather in Paris today is")],
+            finish_reason="length",
+        )
+
+    sentry_init(
+        integrations=[PydanticAIIntegration()],
+        traces_sample_rate=1.0,
+        stream_gen_ai_spans=False,
+    )
+    events = capture_events()
+
+    agent = Agent(FunctionModel(truncated_model), name="test_agent")
+    agent.run_sync("Weather in Paris?")
+
+    (transaction,) = (e for e in events if e["type"] == "transaction")
+    (chat_span,) = (s for s in transaction["spans"] if s["op"] == "gen_ai.chat")
+    assert chat_span["data"][SPANDATA.GEN_AI_RESPONSE_FINISH_REASONS] == '["length"]'
