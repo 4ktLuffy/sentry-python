@@ -1,10 +1,14 @@
+import hashlib
+import hmac
 import inspect
 import json
+import os
 from copy import deepcopy
 from typing import TYPE_CHECKING
 
 from sentry_sdk._types import BLOB_DATA_SUBSTITUTE
 from sentry_sdk.ai.consts import DATA_URL_BASE64_REGEX
+from sentry_sdk.consts import SPANDATA
 
 if TYPE_CHECKING:
     from typing import Any, Callable, Dict, List, Optional, Tuple, Union
@@ -508,6 +512,37 @@ def _set_span_data_attribute(
         span.set_attribute(key, value)
     else:
         span.set_data(key, value)
+
+
+# Random per process and never sent: fingerprints only compare within one process.
+_TOOL_ARGUMENTS_KEY = os.urandom(32)
+
+
+def tool_arguments_fingerprint(arguments: "Any") -> "Optional[str]":
+    """
+    A keyed fingerprint of tool call arguments that is safe to send when the arguments
+    themselves are not recorded. JSON strings and objects are canonicalised first, so the
+    same arguments give the same fingerprint however they were formatted.
+    """
+    if arguments is None:
+        return None
+    try:
+        value = json.loads(arguments) if isinstance(arguments, str) else arguments
+        canonical = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    except (TypeError, ValueError):
+        canonical = str(arguments)
+    digest = hmac.new(_TOOL_ARGUMENTS_KEY, canonical.encode("utf-8"), hashlib.sha256)
+    return digest.hexdigest()[:16]
+
+
+def set_tool_arguments_fingerprint(
+    span: "Union[Span, StreamedSpan]", arguments: "Any"
+) -> None:
+    fingerprint = tool_arguments_fingerprint(arguments)
+    if fingerprint is not None:
+        _set_span_data_attribute(
+            span, SPANDATA.GEN_AI_TOOL_CALL_ARGUMENTS_HASH, fingerprint
+        )
 
 
 def normalize_message_role(role: str) -> str:

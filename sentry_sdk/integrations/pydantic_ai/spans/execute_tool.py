@@ -1,6 +1,7 @@
 from typing import TYPE_CHECKING
 
 import sentry_sdk
+from sentry_sdk.ai.utils import set_tool_arguments_fingerprint
 from sentry_sdk.consts import OP, SPANDATA
 from sentry_sdk.traces import StreamedSpan
 from sentry_sdk.tracing_utils import has_span_streaming_enabled
@@ -64,6 +65,8 @@ def execute_tool_span(
 
     if _should_send_inputs() and tool_args is not None:
         set_on_span(SPANDATA.GEN_AI_TOOL_INPUT, safe_serialize(tool_args))
+    elif tool_args is not None:
+        set_tool_arguments_fingerprint(span, tool_args)
 
     return span
 

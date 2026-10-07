@@ -12,6 +12,7 @@ from sentry_sdk.ai.utils import (
     get_start_span_function,
     normalize_message_roles,
     set_data_normalized,
+    set_tool_arguments_fingerprint,
     transform_content_part,
     truncate_and_annotate_messages,
 )
@@ -766,6 +767,8 @@ class SentryLangchainCallback(BaseCallbackHandler):
                     SPANDATA.GEN_AI_TOOL_INPUT,
                     kwargs.get("inputs", [input_str]),
                 )
+            else:
+                set_tool_arguments_fingerprint(span, kwargs.get("inputs", input_str))
 
     def on_tool_end(
         self: "SentryLangchainCallback", output: str, *, run_id: "UUID", **kwargs: "Any"

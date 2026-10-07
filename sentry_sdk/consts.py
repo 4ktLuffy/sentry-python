@@ -787,6 +787,15 @@ class SPANDATA:
     Example: {"location": "Paris"}
     """
 
+    GEN_AI_TOOL_CALL_ARGUMENTS_HASH = "gen_ai.tool.call.arguments_hash"
+    """
+    A keyed fingerprint of the tool call arguments, sent instead of the arguments when tool
+    inputs are not recorded. Equal arguments in the same process give equal fingerprints, so
+    a repeated identical call can be detected without sending the arguments. The key is random
+    per process and never sent, so the fingerprint cannot be reversed by guessing the input.
+    Example: "3f2a9c41d07be6a1"
+    """
+
     GEN_AI_TOOL_NAME = "gen_ai.tool.name"
     """
     The name of the tool being used.

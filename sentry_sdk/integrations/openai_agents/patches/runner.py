@@ -2,6 +2,7 @@ import sys
 from functools import wraps
 
 import sentry_sdk
+from sentry_sdk.ai.utils import set_tool_arguments_fingerprint
 from sentry_sdk.consts import SPANDATA
 from sentry_sdk.integrations import DidNotEnable
 from sentry_sdk.scope import should_send_default_pii
@@ -60,8 +61,10 @@ class _SentryRunHooks(RunHooks[TContext]):
         client = sentry_sdk.get_client()
         if has_data_collection_enabled(client.options):
             if not client.options["data_collection"]["gen_ai"]["inputs"]:
+                set_tool_arguments_fingerprint(span, context.tool_arguments)
                 return
         elif not should_send_default_pii():
+            set_tool_arguments_fingerprint(span, context.tool_arguments)
             return
 
         if isinstance(span, StreamedSpan):
